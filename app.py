@@ -1,5 +1,5 @@
 """
-Markov Chain Trading Signal Generator - Complete Fixed Version
+Markov Chain Trading Signal Generator - Dimension Issues Fixed
 Focus: Pure HMM Regime Detection + User-Controlled Position Sizing
 """
 
@@ -74,20 +74,11 @@ st.markdown("""
         font-size: 1.5rem;
         margin: 1rem 0;
     }
-    
-    .metric-container {
-        background: white;
-        padding: 1rem;
-        border-radius: 8px;
-        border: 1px solid #dee2e6;
-        text-align: center;
-        margin: 0.5rem 0;
-    }
 </style>
 """, unsafe_allow_html=True)
 
 class HMMSignalGenerator:
-    """Simplified HMM focused on regime detection and signal quality - FIXED VERSION"""
+    """Simplified HMM focused on regime detection - ALL DIMENSION ISSUES FIXED"""
     
     def __init__(self, n_states=3):
         self.n_states = n_states
@@ -98,104 +89,122 @@ class HMMSignalGenerator:
         self.regime_icons = {0: '📉', 1: '➡️', 2: '📈'}
     
     def prepare_features(self, data):
-        """Enhanced feature engineering for regime detection - FIXED"""
+        """Simplified feature engineering - DIMENSION FIXED"""
         # Ensure we have enough data
         if len(data) < 60:
             raise ValueError("Need at least 60 days of data for reliable analysis")
         
-        # Calculate features step by step to avoid alignment issues
-        returns = data['Close'].pct_change()
-        log_returns = np.log(data['Close'] / data['Close'].shift(1))
+        # Basic price features - ensure all are Series
+        close_prices = data['Close'].copy()
+        volume = data['Volume'].copy()
         
-        # Volume features with proper handling
-        volume_sma = data['Volume'].rolling(window=20, min_periods=1).mean()
-        volume_ratio = data['Volume'] / volume_sma
+        # Calculate returns
+        returns = close_prices.pct_change()
         
-        # Price momentum
-        momentum_5 = data['Close'].pct_change(5)
-        momentum_20 = data['Close'].pct_change(20)
-        
-        # Volatility (using returns)
+        # Simple volatility
         volatility = returns.rolling(window=20, min_periods=1).std()
         
-        # RSI
-        rsi = self.calculate_rsi(data['Close'], 14)
+        # Volume ratio
+        volume_ma = volume.rolling(window=20, min_periods=1).mean()
+        volume_ratio = volume / volume_ma
         
-        # Create features DataFrame with explicit alignment
+        # Momentum
+        momentum = close_prices.pct_change(10)
+        
+        # Simple RSI
+        rsi = self.calculate_rsi_simple(close_prices)
+        
+        # Create clean features DataFrame
         features = pd.DataFrame({
             'returns': returns,
-            'log_returns': log_returns,
             'volatility': volatility,
             'volume_ratio': volume_ratio,
-            'momentum_5': momentum_5,
-            'momentum_20': momentum_20,
+            'momentum': momentum,
             'rsi': rsi
         }, index=data.index)
         
-        # Fill any remaining NaN values
-        features = features.fillna(method='ffill').fillna(method='bfill').fillna(0)
+        # Remove NaN values and clean data
+        features = features.dropna()
         
-        # Drop first 30 rows to ensure clean data
-        features_clean = features.iloc[30:].copy()
+        # Additional cleaning
+        features = features.replace([np.inf, -np.inf], np.nan).fillna(0)
         
-        if len(features_clean) < 50:
-            raise ValueError("Insufficient clean data after feature calculation")
+        if len(features) < 50:
+            raise ValueError("Insufficient clean data after processing")
         
-        return features_clean
+        return features
     
-    def calculate_rsi(self, prices, period=14):
-        """Calculate Relative Strength Index - FIXED"""
-        delta = prices.diff()
-        gain = delta.where(delta > 0, 0)
-        loss = -delta.where(delta < 0, 0)
+    def calculate_rsi_simple(self, prices):
+        """Simple RSI calculation - DIMENSION ISSUES FIXED"""
+        # Ensure we're working with a Series
+        if hasattr(prices, 'values'):
+            price_series = prices.copy()
+        else:
+            price_series = pd.Series(prices)
         
-        # Use exponential moving average for smoother calculation
-        avg_gain = gain.ewm(span=period, min_periods=1).mean()
-        avg_loss = loss.ewm(span=period, min_periods=1).mean()
+        # Calculate price changes
+        delta = price_series.diff()
         
-        # Avoid division by zero
-        rs = avg_gain / (avg_loss + 1e-10)
+        # Get gains and losses
+        gains = delta.where(delta > 0, 0)
+        losses = -delta.where(delta < 0, 0)
+        
+        # Simple moving averages
+        avg_gains = gains.rolling(window=14, min_periods=1).mean()
+        avg_losses = losses.rolling(window=14, min_periods=1).mean()
+        
+        # RSI calculation
+        rs = avg_gains / (avg_losses + 0.0001)  # Avoid division by zero
         rsi = 100 - (100 / (1 + rs))
+        
+        # Fill any remaining NaN
+        rsi = rsi.fillna(50)
         
         return rsi
     
     def fit_model(self, features):
-        """Fit HMM model to features - FIXED"""
+        """Fit HMM model - DIMENSION ISSUES FIXED"""
         try:
-            # Ensure no infinite or NaN values
-            features_array = features.values
-            features_array = np.nan_to_num(features_array, nan=0.0, posinf=1.0, neginf=-1.0)
+            # Convert to numpy array safely
+            features_values = features.values.astype(float)
+            
+            # Handle any remaining problematic values
+            features_values = np.nan_to_num(features_values, nan=0.0, posinf=1.0, neginf=-1.0)
             
             # Scale features
-            scaled_features = self.scaler.fit_transform(features_array)
+            scaled_features = self.scaler.fit_transform(features_values)
             
-            # Fit Gaussian Mixture Model
+            # Fit model
             self.model = GaussianMixture(
                 n_components=self.n_states,
-                covariance_type='full',
+                covariance_type='diag',  # Simpler covariance for stability
                 random_state=42,
-                max_iter=100,
-                init_params='kmeans'
+                max_iter=50
             )
             
             self.model.fit(scaled_features)
             
-            # Predict states and probabilities
+            # Get predictions
             states = self.model.predict(scaled_features)
             probabilities = self.model.predict_proba(scaled_features)
             
-            # Sort regimes by average return (Bear=0, Sideways=1, Bull=2)
-            regime_returns = {}
+            # Sort regimes by return (Bear=0, Sideways=1, Bull=2)
+            regime_returns = []
             for regime in range(self.n_states):
-                regime_mask = states == regime
-                if np.sum(regime_mask) > 0:
-                    regime_returns[regime] = features.loc[features.index[regime_mask], 'returns'].mean()
+                mask = states == regime
+                if np.sum(mask) > 0:
+                    avg_return = features.iloc[mask]['returns'].mean()
+                    regime_returns.append((regime, avg_return))
                 else:
-                    regime_returns[regime] = 0
+                    regime_returns.append((regime, 0))
             
-            # Create mapping to ensure Bear=0, Bull=2, Sideways=1
-            sorted_regimes = sorted(regime_returns.items(), key=lambda x: x[1])
-            regime_mapping = {sorted_regimes[i][0]: i for i in range(len(sorted_regimes))}
+            # Sort by returns
+            regime_returns.sort(key=lambda x: x[1])
+            
+            # Create mapping
+            regime_mapping = {}
+            for new_regime, (old_regime, _) in enumerate(regime_returns):
+                regime_mapping[old_regime] = new_regime
             
             # Remap states
             remapped_states = np.array([regime_mapping[state] for state in states])
@@ -210,72 +219,65 @@ class HMMSignalGenerator:
         except Exception as e:
             raise ValueError(f"Model fitting failed: {str(e)}")
     
-    def analyze_regimes(self, data, features, states, probabilities):
-        """Comprehensive regime analysis - FIXED"""
+    def analyze_regimes(self, features, states):
+        """Analyze regime characteristics - SIMPLIFIED"""
         regime_stats = {}
         
-        # Align data with features (both should have same length after cleaning)
-        aligned_data = data.loc[features.index]
-        
         for regime in range(self.n_states):
-            regime_mask = states == regime
-            regime_indices = features.index[regime_mask]
-            
-            if len(regime_indices) > 0:
-                regime_features = features.loc[regime_indices]
+            mask = states == regime
+            if np.sum(mask) > 0:
+                regime_features = features.iloc[mask]
                 
                 regime_stats[regime] = {
                     'name': self.regime_names[regime],
                     'icon': self.regime_icons[regime],
                     'color': self.regime_colors[regime],
-                    'days': len(regime_indices),
-                    'percentage': len(regime_indices) / len(features) * 100,
-                    'avg_return': regime_features['returns'].mean() * 100,
-                    'volatility': regime_features['returns'].std() * 100,
-                    'avg_volume_ratio': regime_features['volume_ratio'].mean(),
+                    'days': int(np.sum(mask)),
+                    'percentage': float(np.sum(mask) / len(states) * 100),
+                    'avg_return': float(regime_features['returns'].mean() * 100),
+                    'volatility': float(regime_features['returns'].std() * 100),
                     'persistence': self.calculate_persistence(states, regime)
                 }
         
         return regime_stats
     
     def calculate_persistence(self, states, regime):
-        """Calculate regime persistence probability - FIXED"""
+        """Calculate persistence rate"""
         if len(states) < 2:
             return 0.0
         
-        same_regime_transitions = 0
+        same_transitions = 0
         total_regime_days = 0
         
         for i in range(1, len(states)):
             if states[i-1] == regime:
                 total_regime_days += 1
                 if states[i] == regime:
-                    same_regime_transitions += 1
+                    same_transitions += 1
         
-        return (same_regime_transitions / total_regime_days * 100) if total_regime_days > 0 else 0.0
+        return (same_transitions / total_regime_days * 100) if total_regime_days > 0 else 0.0
     
     def generate_signal(self, current_regime, confidence, regime_stats):
-        """Generate trading signal based on current regime - FIXED"""
+        """Generate trading signal"""
         regime_name = self.regime_names[current_regime]
         
-        # Signal logic
-        if confidence >= 0.7:  # High confidence threshold
+        if confidence >= 0.7:
             if regime_name == 'Bull':
                 signal = 'BUY'
-                signal_strength = min(10, max(6, int(confidence * 12)))
+                strength = min(10, max(6, int(confidence * 12)))
             elif regime_name == 'Bear':
-                signal = 'SELL'
-                signal_strength = min(10, max(6, int(confidence * 12)))
-            else:  # Sideways
+                signal = 'SELL'  
+                strength = min(10, max(6, int(confidence * 12)))
+            else:
                 signal = 'HOLD'
-                signal_strength = max(3, int(confidence * 8))
+                strength = max(3, int(confidence * 8))
         else:
             signal = 'HOLD'
-            signal_strength = max(1, int(confidence * 6))
+            strength = max(1, int(confidence * 6))
         
         return {
             'signal': signal,
-            'strength': signal_strength,
+            'strength': strength,
             'regime': regime_name,
             'confidence': confidence * 100,
             'regime_stats': regime_stats.get(current_regime, {})
@@ -288,105 +290,67 @@ def main():
     st.markdown("""
     <div class="regime-card">
     <strong>🎯 Pure HMM Signal Generation</strong><br>
-    Advanced regime detection using Hidden Markov Models. You control position sizing and risk management 
-    based on high-quality market regime signals.
+    Advanced regime detection using Hidden Markov Models. You control position sizing and risk management.
     </div>
     """, unsafe_allow_html=True)
     
-    # Sidebar inputs
+    # Sidebar
     st.sidebar.header("📊 Analysis Settings")
     
-    symbol = st.sidebar.text_input(
-        "Stock Symbol:",
-        value="SOFI",
-        help="Enter any valid stock ticker"
-    ).upper()
+    symbol = st.sidebar.text_input("Stock Symbol:", value="SOFI").upper()
+    lookback_days = st.sidebar.slider("Analysis Period (Days):", 100, 500, 200)
+    confidence_threshold = st.sidebar.slider("Confidence Threshold:", 0.5, 0.9, 0.7, 0.05)
     
-    lookback_days = st.sidebar.slider(
-        "Analysis Period (Days):",
-        min_value=100,
-        max_value=800,
-        value=252,
-        help="Number of trading days to analyze"
-    )
-    
-    confidence_threshold = st.sidebar.slider(
-        "Signal Confidence Threshold:",
-        min_value=0.5,
-        max_value=0.9,
-        value=0.7,
-        step=0.05,
-        help="Minimum confidence required for BUY/SELL signals"
-    )
-    
-    # Analysis button
     if st.sidebar.button("🚀 Generate Signal", type="primary"):
         try:
-            with st.spinner(f"Analyzing {symbol} market regimes..."):
+            with st.spinner(f"Analyzing {symbol}..."):
                 # Download data
                 end_date = datetime.now()
-                start_date = end_date - timedelta(days=int(lookback_days * 1.8))
+                start_date = end_date - timedelta(days=int(lookback_days * 1.5))
                 
                 data = yf.download(symbol, start=start_date, end=end_date, progress=False)
                 
-                if data.empty:
-                    st.error(f"❌ No data available for {symbol}")
+                if data.empty or len(data) < 100:
+                    st.error(f"❌ Insufficient data for {symbol}")
                     return
                 
-                # Ensure we have enough data
-                if len(data) < 100:
-                    st.error(f"❌ Insufficient data for {symbol}. Need at least 100 days.")
-                    return
-                
-                # Initialize HMM
+                # Initialize and run analysis
                 hmm = HMMSignalGenerator()
-                
-                # Prepare features
                 features = hmm.prepare_features(data)
-                
-                # Fit model and get predictions
                 states, probabilities = hmm.fit_model(features)
                 
-                # Get current state
+                # Current state
                 current_regime = states[-1]
                 current_confidence = probabilities[-1].max()
                 
                 # Analyze regimes
-                regime_stats = hmm.analyze_regimes(data, features, states, probabilities)
+                regime_stats = hmm.analyze_regimes(features, states)
                 
                 # Generate signal
                 signal_data = hmm.generate_signal(current_regime, current_confidence, regime_stats)
                 
-                # Display results  
-                display_results(symbol, signal_data, regime_stats, data, features, states, probabilities)
+                # Display results
+                display_results(symbol, signal_data, regime_stats, data, features, states)
                 
         except Exception as e:
-            st.error(f"❌ Error analyzing {symbol}: {str(e)}")
-            st.info("💡 Try using a different symbol (like AAPL) or reduce the analysis period.")
+            st.error(f"❌ Error: {str(e)}")
+            st.info("💡 Try AAPL or reduce the analysis period")
 
-def display_results(symbol, signal_data, regime_stats, data, features, states, probabilities):
-    """Display comprehensive analysis results"""
+def display_results(symbol, signal_data, regime_stats, data, features, states):
+    """Display results - SIMPLIFIED"""
     
-    # Main signal display
     signal = signal_data['signal']
     strength = signal_data['strength']
     regime = signal_data['regime']
     confidence = signal_data['confidence']
     
-    # Signal box styling
-    if signal == 'BUY':
-        signal_class = 'buy-signal'
-        signal_icon = '🟢'
-    elif signal == 'SELL':
-        signal_class = 'sell-signal'
-        signal_icon = '🔴'
-    else:
-        signal_class = 'hold-signal'
-        signal_icon = '🟡'
+    # Signal display
+    signal_colors = {'BUY': 'buy-signal', 'SELL': 'sell-signal', 'HOLD': 'hold-signal'}
+    signal_icons = {'BUY': '🟢', 'SELL': '🔴', 'HOLD': '🟡'}
     
     st.markdown(f"""
-    <div class="signal-box {signal_class}">
-        <h2>{signal_icon} {signal} SIGNAL</h2>
+    <div class="signal-box {signal_colors[signal]}">
+        <h2>{signal_icons[signal]} {signal} SIGNAL</h2>
         <h3>{regime} Market Regime</h3>
         <p><strong>Confidence:</strong> {confidence:.1f}%</p>
         <div class="strength-meter">
@@ -395,42 +359,22 @@ def display_results(symbol, signal_data, regime_stats, data, features, states, p
     </div>
     """, unsafe_allow_html=True)
     
-    # Current regime details
-    current_regime_stats = signal_data['regime_stats']
-    if current_regime_stats:
+    # Current regime metrics
+    current_stats = signal_data['regime_stats']
+    if current_stats:
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            st.metric(
-                "Avg Daily Return",
-                f"{current_regime_stats.get('avg_return', 0):.2f}%",
-                help="Average daily return in current regime"
-            )
-        
+            st.metric("Daily Return", f"{current_stats.get('avg_return', 0):.2f}%")
         with col2:
-            st.metric(
-                "Volatility",
-                f"{current_regime_stats.get('volatility', 0):.1f}%",
-                help="Daily volatility in current regime"
-            )
-        
+            st.metric("Volatility", f"{current_stats.get('volatility', 0):.1f}%")
         with col3:
-            st.metric(
-                "Persistence",
-                f"{current_regime_stats.get('persistence', 0):.1f}%",
-                help="Probability regime continues tomorrow"
-            )
-        
+            st.metric("Persistence", f"{current_stats.get('persistence', 0):.1f}%")
         with col4:
-            st.metric(
-                "Days in Regime",
-                f"{current_regime_stats.get('days', 0)}",
-                help="Total days in this regime historically"
-            )
+            st.metric("Days", f"{current_stats.get('days', 0)}")
     
-    # Regime statistics
+    # Regime table
     st.header("📊 Regime Analysis")
-    
     regime_data = []
     for regime_id, stats in regime_stats.items():
         regime_data.append({
@@ -442,112 +386,62 @@ def display_results(symbol, signal_data, regime_stats, data, features, states, p
             'Persistence': f"{stats['persistence']:.1f}%"
         })
     
-    regime_df = pd.DataFrame(regime_data)
-    st.dataframe(regime_df, use_container_width=True)
+    st.dataframe(pd.DataFrame(regime_data), use_container_width=True)
     
-    # Position sizing guidance
+    # Position guidance
     st.header("💡 Position Sizing Guidance")
-    
     col1, col2 = st.columns(2)
     
     with col1:
         st.markdown("""
         <div class="regime-card">
-        <h4>🎯 Suggested Position Sizes</h4>
+        <h4>🎯 Suggested Sizes</h4>
         <ul>
-        <li><strong>Conservative:</strong> 2-5% of portfolio</li>
-        <li><strong>Moderate:</strong> 5-10% of portfolio</li>
-        <li><strong>Aggressive:</strong> 10-20% of portfolio</li>
+        <li><strong>Conservative:</strong> 2-5%</li>
+        <li><strong>Moderate:</strong> 5-10%</li>
+        <li><strong>Aggressive:</strong> 10-20%</li>
         </ul>
-        <p><em>Adjust based on your risk tolerance and the signal strength above.</em></p>
         </div>
         """, unsafe_allow_html=True)
     
     with col2:
-        persistence_rate = current_regime_stats.get('persistence', 0) if current_regime_stats else 0
-        st.markdown(f"""
+        st.markdown("""
         <div class="regime-card">
         <h4>⚠️ Risk Management</h4>
         <ul>
-        <li><strong>Stop Loss:</strong> Set based on your pain threshold</li>
-        <li><strong>Take Profit:</strong> Consider regime persistence rate</li>
-        <li><strong>Review:</strong> Check weekly for regime changes</li>
-        <li><strong>Current Persistence:</strong> {persistence_rate:.1f}%</li>
+        <li><strong>Stop Loss:</strong> Your choice</li>
+        <li><strong>Take Profit:</strong> Based on persistence</li>
+        <li><strong>Review:</strong> Weekly checks</li>
         </ul>
         </div>
         """, unsafe_allow_html=True)
     
-    # Price chart with regime overlay
-    st.header("📈 Price Chart with Regime Detection")
-    
-    # Create price chart with regime overlay
+    # Simple chart
+    st.header("📈 Price Chart")
     try:
-        # Get aligned data for chart
-        chart_data = data.loc[features.index]
-        chart_states = states
-        
-        # Limit to recent data for better visualization
-        recent_data = chart_data.tail(min(200, len(chart_data)))
-        recent_states = chart_states[-len(recent_data):]
+        chart_data = data.loc[features.index].tail(100)
+        chart_states = states[-len(chart_data):]
         
         fig = go.Figure()
-        
-        # Add price line
         fig.add_trace(go.Scatter(
-            x=recent_data.index,
-            y=recent_data['Close'],
+            x=chart_data.index,
+            y=chart_data['Close'],
             mode='lines',
             name=f'{symbol} Price',
-            line=dict(color='black', width=2)
+            line=dict(color='blue', width=2)
         ))
         
-        # Add regime background colors
-        regime_colors = {0: 'rgba(220, 53, 69, 0.2)', 1: 'rgba(255, 193, 7, 0.2)', 2: 'rgba(40, 167, 69, 0.2)'}
-        
-        if len(recent_states) > 0:
-            current_regime = recent_states[0]
-            regime_start = 0
-            
-            for i in range(1, len(recent_states)):
-                if recent_states[i] != current_regime or i == len(recent_states) - 1:
-                    end_idx = i - 1 if i < len(recent_states) else i - 1
-                    
-                    fig.add_shape(
-                        type="rect",
-                        x0=recent_data.index[regime_start],
-                        x1=recent_data.index[end_idx],
-                        y0=recent_data['Close'].min() * 0.95,
-                        y1=recent_data['Close'].max() * 1.05,
-                        fillcolor=regime_colors.get(current_regime, 'rgba(128, 128, 128, 0.2)'),
-                        layer="below",
-                        line_width=0,
-                    )
-                    
-                    regime_start = i
-                    current_regime = recent_states[i] if i < len(recent_states) else current_regime
-        
         fig.update_layout(
-            title=f"{symbol} Price with Market Regimes",
+            title=f"{symbol} Price Trend",
             xaxis_title="Date",
             yaxis_title="Price ($)",
-            hovermode='x unified',
             template='plotly_white',
-            height=500
+            height=400
         )
         
         st.plotly_chart(fig, use_container_width=True)
-        
-    except Exception as e:
-        st.warning(f"Chart display error: {str(e)}")
-    
-    # Footer
-    st.markdown("---")
-    st.markdown(f"""
-    <div style="text-align: center; color: #666;">
-    <p>🔮 Analysis completed for {symbol} • Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M')} • 
-    <strong>Remember:</strong> You control position sizing and risk management</p>
-    </div>
-    """, unsafe_allow_html=True)
+    except:
+        st.info("Chart display temporarily unavailable")
 
 if __name__ == "__main__":
     main()
